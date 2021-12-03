@@ -10,6 +10,7 @@ from scapy.supersocket import L3RawSocket
 from scapy.layers.inet import IP, TCP
 from scapy.volatile import RandShort
 from scapy.sendrecv import sr, sr1
+from multiprocessing import Pool
 
 
 class PortScanner:
@@ -23,17 +24,20 @@ class PortScanner:
         self.ports = self._parse_ports(self.input_data.PORTS)
 
     # region input_parse
-    def _create_parser(self):
+    @staticmethod
+    def _create_parser():
         parser = argparse.ArgumentParser()
         parser.add_argument('IP_ADDRESS', help='ip for check', type=str, action='store')
-        parser.add_argument('--timeout', default=2, type=float, help='таймаут ожидания ответа (по умолчанию 2с)')
-        parser.add_argument('-j', '--num-threads', help='число потоков', type=int, default=1)
-        parser.add_argument('-v', '--verbose', action='store_true', default=False)
-        parser.add_argument('-g', '--guess', action='store_true', default=False)
-        parser.add_argument('PORTS', type=str, nargs='+')
+        parser.add_argument('--timeout', default=2, type=float, help='response timeout (default 2s)')
+        parser.add_argument('-j', '--num-threads', help='number of threads (default 10)', type=int, default=10)
+        parser.add_argument('-v', '--verbose', action='store_true', default=False, help='verbose mode')
+        parser.add_argument('-g', '--guess', action='store_true', default=False,
+                            help='definition protocol of application level')
+        parser.add_argument('PORTS', type=str, nargs='+', help='port range')
         return parser.parse_args()
 
-    def _parse_ports(self, input_ports):
+    @staticmethod
+    def _parse_ports(input_ports):
         ports = dict(udp=set(), tcp=set())
         lambda_filter = lambda a, b: range(a, b + 1)
         for port_el in input_ports:
@@ -53,39 +57,41 @@ class PortScanner:
     # endregion
 
     def scan_open_ports(self):
-        self.scan_open_tcp_ports()
-        self.scan_open_udp_ports()
+        with Pool(self.num_threads) as pool:
+            pool.map(self.scan_open_tcp_ports, self.ports['tcp'])
+        with Pool(self.num_threads) as pool:
+            pool.map(self.scan_open_udp_ports, self.ports['udp'])
 
     # region UDP
-    def scan_open_udp_ports(self):
+    def scan_open_udp_ports(self, port):
         id = randint(1, 65535)
         protocols = dict(
             HTTP=b'GET / HTTP/1.1',
             DNS=struct.pack('!HHHHHH', id, 256, 1, 0, 0, 0) + b'\x06google\x03com\x00\x00\x01\x00\x01',
             ECHO=b'hello world'
         )
-        for port in self.ports['udp']:
-            udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            udp_socket.settimeout(self.timeout)
-            for protocol, prot_value in protocols.items():
-                try:
-                    udp_socket.sendto(prot_value, (self.IP_ADDRESS, port))
-                    data, conn = udp_socket.recvfrom(512)
-                    if data:
-                        if self.guess:
-                            prot_answer = self._define_udp_protocol(data, id, prot_value)
-                            if prot_answer != '-':
-                                print(f'UDP {port} {prot_answer}')
-                                break
-                        else:
-                            print(f'UDP {port}')
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_socket.settimeout(self.timeout)
+        for protocol, prot_value in protocols.items():
+            try:
+                udp_socket.sendto(prot_value, (self.IP_ADDRESS, port))
+                data, conn = udp_socket.recvfrom(512)
+                if data:
+                    if self.guess:
+                        prot_answer = self._define_udp_protocol(data, id, prot_value)
+                        if prot_answer != '-':
+                            print(f'UDP {port} {prot_answer}')
                             break
-                except socket.timeout as e:
-                    pass
-            udp_socket.close()
+                    else:
+                        print(f'UDP {port}')
+                        break
+            except socket.timeout as e:
+                pass
+        udp_socket.close()
 
-    def _define_udp_protocol(self, data, id, req):
-        if data[:4].startswith(b"HTTP"):
+    @staticmethod
+    def _define_udp_protocol(data, id, req):
+        if b'HTTP' in data[4:]:
             return 'HTTP'
         elif struct.pack('!H', id) in data:
             return 'DNS'
@@ -97,34 +103,29 @@ class PortScanner:
     # endregion
 
     # region TCP
-    def scan_open_tcp_ports(self):
+    def scan_open_tcp_ports(self, port):
         if sys.platform == 'win32':
             conf.L3socket = L3RawSocket  # config for windows
+        start_time = time.time()
+        tcp_connect = sr1(IP(dst=self.IP_ADDRESS) / TCP(sport=RandShort(), dport=port, flags='S'),
+                          timeout=self.timeout, verbose=0)
+        if tcp_connect is None:
+            # closed
+            pass
+        elif tcp_connect.haslayer(TCP):
+            if tcp_connect.getlayer(TCP).flags == 0x12:
+                sr(IP(dst=self.IP_ADDRESS) / TCP(sport=RandShort(), dport=port, flags='AR'), timeout=self.timeout,
+                   verbose=0)
+                elapsed_time = time.time() - start_time
+                protocol_answer = ''
+                if self.guess:
+                    protocol_answer = tcp_connect.sprintf('%TCP.sport%')
+                    if protocol_answer == 'domain':
+                        protocol_answer = 'DNS'
+                    else:
+                        protocol_answer = protocol_answer.upper()
 
-        for port in self.ports['tcp']:
-            src_port = RandShort()
-            start_time = time.time()
-            tcp_connect = sr1(IP(dst=self.IP_ADDRESS) / TCP(sport=src_port, dport=port, flags='S'),
-                              timeout=self.timeout, verbose=0)
-            if tcp_connect is None:
-                # closed
-                pass
-            elif tcp_connect.haslayer(TCP):
-                if tcp_connect.getlayer(TCP).flags == 0x12:
-                    sr(IP(dst=self.IP_ADDRESS) / TCP(sport=src_port, dport=port, flags='AR'), timeout=self.timeout,
-                       verbose=0)
-                    elapsed_time = time.time() - start_time
-                    protocol_answer = ''
-                    if self.guess:
-                        protocol_answer = tcp_connect.sprintf('%TCP.sport%')
-                        if protocol_answer == 'http':
-                            protocol_answer = protocol_answer.upper()
-                        elif protocol_answer == 'domain':
-                            protocol_answer = 'DNS'
-                        elif protocol_answer == 'echo':
-                            protocol_answer = protocol_answer.upper()
-
-                    self._handle_answer_for_open_tcp_port(elapsed_time, port, protocol_answer)
+                self._handle_answer_for_open_tcp_port(elapsed_time, port, protocol_answer)
 
     def _handle_answer_for_open_tcp_port(self, elapsed_time, port, protocol_answer):
         if self.verbose and self.guess:
