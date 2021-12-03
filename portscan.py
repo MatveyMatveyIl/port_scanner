@@ -91,7 +91,7 @@ class PortScanner:
 
     @staticmethod
     def _define_udp_protocol(data, id, req):
-        if b'HTTP' in data[4:]:
+        if b'HTTP' in data[:4]:
             return 'HTTP'
         elif struct.pack('!H', id) in data:
             return 'DNS'
