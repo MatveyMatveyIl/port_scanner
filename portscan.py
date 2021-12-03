@@ -67,7 +67,7 @@ class PortScanner:
         id = randint(1, 65535)
         protocols = dict(
             HTTP=b'GET / HTTP/1.1',
-            DNS=struct.pack('!HHHHHH', id, 256, 1, 0, 0, 0) + b'\x06google\x03com\x00\x00\x01\x00\x01',
+            DNS=struct.pack('!HHHHHH', id, 256, 1, 0, 0, 0) + b'\x06github\x03com\x00\x00\x01\x00\x01',
             ECHO=b'hello world'
         )
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
