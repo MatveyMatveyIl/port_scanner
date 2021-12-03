@@ -44,12 +44,15 @@ class PortScanner:
             protocol = port_el[:3]
             arg_range = port_el[4:]
             new_ports = set()
-            for port in arg_range.split(','):
-                if '-' in port:
-                    new_range = port.split('-')
-                    new_ports.update(set(lambda_filter(int(new_range[0]), int(new_range[1]))))
-                else:
-                    new_ports.add(int(port))
+            if arg_range == '':
+                new_ports.update(set(lambda_filter(1, 65535)))
+            else:
+                for port in arg_range.split(','):
+                    if '-' in port:
+                        new_range = port.split('-')
+                        new_ports.update(set(lambda_filter(int(new_range[0]), int(new_range[1]))))
+                    else:
+                        new_ports.add(int(port))
 
             ports[protocol].update(new_ports)
         return ports
